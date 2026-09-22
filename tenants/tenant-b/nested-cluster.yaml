@@ -38,6 +38,24 @@
 # Shared join token: fixed in-repo since this is an isolated demo network
 # with no external exposure. In production this would be a Sylva-managed
 # secret.
+#
+# WHY DataVolume AND NOT containerDisk: on Kubernetes 1.36, KubeVirt 1.7.0
+# (what Sylva pins) cannot report a containerDisk-backed VMI as Running.
+# k8s 1.36 turned on strict numeric format validation for CRDs
+# (kubernetes/kubernetes#136582); KubeVirt declares
+# ContainerDiskInfo.Checksum as uint32 while its CRD publishes format:
+# int32, and virt-handler writes an empty value, so every status update is
+# rejected with:
+#
+#   Invalid value: "": Checked value must be of type integer with format
+#   int32 in status.volumeStatus[1].containerDiskVolume.checksum
+#
+# The guest boots fine; the VMI just sticks in phase Scheduled forever
+# (kubevirt/kubevirt#17858, fixed upstream after 1.7.0). That status field
+# is only written for containerDisk volumes, so importing the same image
+# into a PVC with CDI avoids the bug entirely rather than working around
+# it. It also gives the guest a disk big enough for k3s + containerd, which
+# the ~2.2GB containerdisk was tight for.
 apiVersion: v1
 kind: Service
 metadata:
@@ -57,6 +75,19 @@ metadata:
   labels: {sylva.telco/tenant: legacyco, sylva.telco/role: nested-control-plane}
 spec:
   runStrategy: Always
+  dataVolumeTemplates:
+    - metadata:
+        name: tenant-b-cp-root
+      spec:
+        storage:
+          resources:
+            requests:
+              storage: 10Gi
+        source:
+          registry:
+            # Same image as before, imported into a PVC by CDI instead of
+            # being consumed directly as a containerDisk.
+            url: docker://quay.io/containerdisks/ubuntu:22.04
   template:
     metadata:
       labels:
@@ -68,7 +99,7 @@ spec:
           cores: 2
         devices:
           disks:
-            - name: containerdisk
+            - name: rootdisk
               disk: {bus: virtio}
             - name: cloudinitdisk
               disk: {bus: virtio}
@@ -87,9 +118,9 @@ spec:
           multus:
             networkName: tenant-b-dp
       volumes:
-        - name: containerdisk
-          containerDisk:
-            image: quay.io/containerdisks/ubuntu:22.04
+        - name: rootdisk
+          dataVolume:
+            name: tenant-b-cp-root
         - name: cloudinitdisk
           cloudInitNoCloud:
             userData: |
@@ -110,6 +141,17 @@ metadata:
   labels: {sylva.telco/tenant: legacyco, sylva.telco/role: nested-worker}
 spec:
   runStrategy: Always
+  dataVolumeTemplates:
+    - metadata:
+        name: tenant-b-worker-root
+      spec:
+        storage:
+          resources:
+            requests:
+              storage: 10Gi
+        source:
+          registry:
+            url: docker://quay.io/containerdisks/ubuntu:22.04
   template:
     metadata:
       labels:
@@ -121,7 +163,7 @@ spec:
           cores: 2
         devices:
           disks:
-            - name: containerdisk
+            - name: rootdisk
               disk: {bus: virtio}
             - name: cloudinitdisk
               disk: {bus: virtio}
@@ -140,9 +182,9 @@ spec:
           multus:
             networkName: tenant-b-dp
       volumes:
-        - name: containerdisk
-          containerDisk:
-            image: quay.io/containerdisks/ubuntu:22.04
+        - name: rootdisk
+          dataVolume:
+            name: tenant-b-worker-root
         - name: cloudinitdisk
           cloudInitNoCloud:
             userData: |
